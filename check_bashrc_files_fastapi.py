@@ -3,8 +3,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import torch
 from transformers import AutoTokenizer, AutoModel
-import re
 
+# Initialize the FastAPI app
 app = FastAPI(
     title="Bashrc Analyzer",
     description="API for analyzing .bashrc files for potentially dangerous patterns",
@@ -18,81 +18,6 @@ model = AutoModel.from_pretrained("microsoft/codebert-base")
 
 class BashrcInput(BaseModel):
     content: str
-
-
-def get_embedding(text):
-    inputs = tokenizer(
-        text, return_tensors="pt", truncation=True, max_length=512, padding=True
-    )
-    with torch.no_grad():
-        outputs = model(**inputs)
-    return outputs.last_hidden_state.mean(dim=1)
-
-
-def categorize_bashrc(file_content):
-    categories = {
-        "environment_vars": [],
-        "module_loads": [],
-        "path_modifications": [],
-        "libraries": [],
-        "conda": [],
-    }
-
-    lines = file_content.split("\n")
-    current_function = None
-
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if "export LD_LIBRARY_PATH" in line:
-            categories["libraries"].append(line)
-        elif "export PYTHON_PATH" in line:
-            categories["environment_vars"].append(line)
-        elif "export PATH=" in line:
-            categories["path_modifications"].append(line)
-        elif "module load" in line or "ml " in line:
-            categories["module_loads"].append(line)
-        elif "conda initialize" in line or "__conda_setup" in line:
-            categories["conda"].append(line)
-
-    return categories
-
-
-def analyze_category(category, category_content, incorrect_examples, threshold=0.9):
-    anomalies = []
-    category_text = "\n".join(category_content)
-    category_emb = get_embedding(category_text)
-
-    incorrect_category_examples = incorrect_examples.get(category, [])
-    incorrect_embeddings = [get_embedding(ex) for ex in incorrect_category_examples]
-
-    if incorrect_embeddings:
-        max_similarity = max(
-            torch.cosine_similarity(category_emb, inc_emb, dim=1).item()
-            for inc_emb in incorrect_embeddings
-        )
-
-        if max_similarity > threshold:
-            anomalies.append((category_text, max_similarity))
-
-    return anomalies
-
-
-def analyze_bashrc(file_content, incorrect_examples, threshold=0.8):
-    categories = categorize_bashrc(file_content)
-    all_anomalies = {}
-
-    for category, content in categories.items():
-        if content:
-            anomalies = analyze_category(
-                category, content, incorrect_examples, threshold
-            )
-            if anomalies:
-                all_anomalies[category] = anomalies
-
-    return all_anomalies
 
 
 incorrect_examples = {
@@ -130,6 +55,81 @@ incorrect_examples = {
 }
 
 
+def get_embedding(text):
+    inputs = tokenizer(
+        text, return_tensors="pt", truncation=True, max_length=512, padding=True
+    )
+    with torch.no_grad():
+        outputs = model(**inputs)
+    return outputs.last_hidden_state.mean(dim=1)
+
+
+def categorize_bashrc(file_content):
+    categories = {
+        "environment_vars": [],
+        "module_loads": [],
+        "path_modifications": [],
+        "libraries": [],
+        "conda": [],
+    }
+
+    lines = file_content.split("\n")
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if "export LD_LIBRARY_PATH" in line:
+            categories["libraries"].append(line)
+        elif "export PYTHON_PATH" in line:
+            categories["environment_vars"].append(line)
+        elif "export PATH=" in line:
+            categories["path_modifications"].append(line)
+        elif "module load" in line or "ml " in line:
+            categories["module_loads"].append(line)
+        elif "conda initialize" in line or "__conda_setup" in line:
+            categories["conda"].append(line)
+
+    return categories
+
+
+def analyze_category(category, category_content, incorrect_examples_ext, threshold=0.9):
+
+    anomalies = []
+    category_text = "\n".join(category_content)
+    category_emb = get_embedding(category_text)
+
+    incorrect_category_examples = incorrect_examples_ext.get(category, [])
+    incorrect_embeddings = [get_embedding(ex) for ex in incorrect_category_examples]
+
+    if incorrect_embeddings:
+        max_similarity = max(
+            torch.cosine_similarity(category_emb, inc_emb, dim=1).item()
+            for inc_emb in incorrect_embeddings
+        )
+
+        if max_similarity > threshold:
+            anomalies.append((category_text, max_similarity))
+
+    return anomalies
+
+
+def analyze_bashrc(file_content, incorrect_examples_ext, threshold=0.8):
+    categories = categorize_bashrc(file_content)
+    all_anomalies = {}
+
+    for category, content in categories.items():
+        if content:
+            anomalies = analyze_category(
+                category, content, incorrect_examples_ext, threshold
+            )
+            if anomalies:
+                all_anomalies[category] = anomalies
+
+    return all_anomalies
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return """
@@ -149,7 +149,7 @@ async def root():
 
 
 @app.post("/analyze_bashrc/", response_class=HTMLResponse)
-async def analyze_bashrc_endpoint(file: UploadFile = File(...)):
+async def analyze_bsashrc_endpoint(file: UploadFile = File(...)):
     try:
         content = await file.read()
         bashrc_content = content.decode()
